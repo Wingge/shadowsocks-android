@@ -25,8 +25,8 @@ import android.util.Log
 import androidx.recyclerview.widget.SortedList
 import com.crashlytics.android.Crashlytics
 import com.github.shadowsocks.Core
+import com.github.shadowsocks.net.Subnet
 import com.github.shadowsocks.preference.DataStore
-import com.github.shadowsocks.utils.Subnet
 import com.github.shadowsocks.utils.asIterable
 import java.io.File
 import java.io.IOException
@@ -46,7 +46,7 @@ class Acl {
 
         val networkAclParser = "^IMPORT_URL\\s*<(.+)>\\s*$".toRegex()
 
-        fun getFile(id: String, context: Context = Core.deviceStorage) = File(context.filesDir, "$id.acl")
+        fun getFile(id: String, context: Context = Core.deviceStorage) = File(context.noBackupFilesDir, "$id.acl")
 
         var customRules: Acl
             get() {
@@ -148,7 +148,7 @@ class Acl {
     }
 
     fun fromId(id: String): Acl = try {
-        fromReader(Acl.getFile(id).bufferedReader())
+        fromReader(getFile(id).bufferedReader())
     } catch (_: IOException) { this }
 
     fun flatten(depth: Int): Acl {
@@ -177,10 +177,16 @@ class Acl {
     override fun toString(): String {
         val result = StringBuilder()
         result.append(if (bypass) "[bypass_all]\n" else "[proxy_all]\n")
-        val bypassList = (if (bypass) bypassHostnames.asIterable().asSequence() else
-            subnets.asIterable().asSequence().map(Subnet::toString) + proxyHostnames.asIterable().asSequence()).toList()
-        val proxyList = (if (bypass) subnets.asIterable().asSequence().map(Subnet::toString) +
-                proxyHostnames.asIterable().asSequence() else bypassHostnames.asIterable().asSequence()).toList()
+        val bypassList = (if (bypass) {
+            bypassHostnames.asIterable().asSequence()
+        } else {
+            subnets.asIterable().asSequence().map(Subnet::toString) + bypassHostnames.asIterable().asSequence()
+        }).toList()
+        val proxyList = (if (bypass) {
+            subnets.asIterable().asSequence().map(Subnet::toString) + proxyHostnames.asIterable().asSequence()
+        } else {
+            proxyHostnames.asIterable().asSequence()
+        }).toList()
         if (bypassList.isNotEmpty()) {
             result.append("[bypass_list]\n")
             result.append(bypassList.joinToString("\n"))

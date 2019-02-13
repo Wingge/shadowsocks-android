@@ -28,6 +28,7 @@ import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.os.Bundle
 import android.text.format.Formatter
+import android.util.LongSparseArray
 import android.view.*
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -39,7 +40,7 @@ import androidx.core.content.getSystemService
 import androidx.core.os.bundleOf
 import androidx.fragment.app.DialogFragment
 import androidx.recyclerview.widget.*
-import com.crashlytics.android.Crashlytics
+import com.github.shadowsocks.aidl.TrafficStats
 import com.github.shadowsocks.bg.BaseService
 import com.github.shadowsocks.database.Profile
 import com.github.shadowsocks.database.ProfileManager
@@ -75,7 +76,7 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
         else -> false
     }
     private fun isProfileEditable(id: Long) = when ((activity as MainActivity).state) {
-        BaseService.CONNECTED -> id != DataStore.profileId
+        BaseService.CONNECTED -> id !in Core.activeProfileIds
         BaseService.STOPPED -> true
         else -> false
     }
@@ -98,7 +99,7 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
             return image
         }
 
-        override fun onAttach(context: Context?) {
+        override fun onAttach(context: Context) {
             super.onAttach(context)
             val adapter = NfcAdapter.getDefaultAdapter(context)
             adapter?.setNdefPushMessage(NdefMessage(arrayOf(
@@ -149,7 +150,7 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
             edit.alpha = if (editable) 1F else .5F
             var tx = item.tx
             var rx = item.rx
-            if (item.id == bandwidthProfile) {
+            statsCache[item.id]?.apply {
                 tx += txTotal
                 rx += rxTotal
             }
@@ -301,9 +302,7 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
 
     val profilesAdapter by lazy { ProfilesAdapter() }
     private lateinit var undoManager: UndoSnackbarManager<Profile>
-    private var bandwidthProfile = 0L
-    private var txTotal: Long = 0L
-    private var rxTotal: Long = 0L
+    private val statsCache = LongSparseArray<TrafficStats>()
 
     private val clipboard by lazy { requireContext().getSystemService<ClipboardManager>()!! }
 
@@ -367,8 +366,10 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
             }
             R.id.action_import_clipboard -> {
                 try {
-                    val profiles = Profile.findAllUrls(clipboard.primaryClip!!.getItemAt(0).text, Core.currentProfile)
-                            .toList()
+                    val profiles = Profile.findAllUrls(
+                            clipboard.primaryClip!!.getItemAt(0).text,
+                            Core.currentProfile?.first
+                    ).toList()
                     if (profiles.isNotEmpty()) {
                         profiles.forEach { ProfileManager.createProfile(it) }
                         (activity as MainActivity).snackbar().setText(R.string.action_import_msg).show()
@@ -390,7 +391,7 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
             }
             R.id.action_manual_settings -> {
                 startConfig(ProfileManager.createProfile(
-                        Profile().also { Core.currentProfile?.copyFeatureSettingsTo(it) }))
+                        Profile().also { Core.currentProfile?.first?.copyFeatureSettingsTo(it) }))
                 true
             }
             R.id.action_export_clipboard -> {
@@ -416,25 +417,21 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
     private fun startFilesForResult(intent: Intent?, requestCode: Int) {
         try {
             startActivityForResult(intent, requestCode)
-        } catch (e: ActivityNotFoundException) {
-            Crashlytics.logException(e)
-            (activity as MainActivity).snackbar(getString(R.string.file_manager_missing)).show()
-        } catch (e: SecurityException) {
-            Crashlytics.logException(e)
-            (activity as MainActivity).snackbar(getString(R.string.file_manager_missing)).show()
-        }
+            return
+        } catch (_: ActivityNotFoundException) { } catch (_: SecurityException) { }
+        (activity as MainActivity).snackbar(getString(R.string.file_manager_missing)).show()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (resultCode != Activity.RESULT_OK) super.onActivityResult(requestCode, resultCode, data)
         else when (requestCode) {
             REQUEST_IMPORT_PROFILES -> {
-                val feature = Core.currentProfile
+                val feature = Core.currentProfile?.first
                 var success = false
                 val activity = activity as MainActivity
                 for (uri in data!!.datas) try {
                     Profile.parseJson(activity.contentResolver.openInputStream(uri)!!.bufferedReader().readText(),
-                            feature).forEach {
+                            feature) {
                         ProfileManager.createProfile(it)
                         success = true
                     }
@@ -447,8 +444,9 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
             REQUEST_EXPORT_PROFILES -> {
                 val profiles = ProfileManager.getAllProfiles()
                 if (profiles != null) try {
+                    val lookup = LongSparseArray<Profile>(profiles.size).apply { profiles.forEach { put(it.id, it) } }
                     requireContext().contentResolver.openOutputStream(data?.data!!)!!.bufferedWriter().use {
-                        it.write(JSONArray(profiles.map { it.toJson() }.toTypedArray()).toString(2))
+                        it.write(JSONArray(profiles.map { it.toJson(lookup) }.toTypedArray()).toString(2))
                     }
                 } catch (e: Exception) {
                     printLog(e)
@@ -459,24 +457,14 @@ class ProfilesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener {
         }
     }
 
-    override fun onTrafficUpdated(profileId: Long, txRate: Long, rxRate: Long, txTotal: Long, rxTotal: Long) {
-        if (profileId != -1L) { // ignore resets from MainActivity
-            if (bandwidthProfile != profileId) {
-                onTrafficPersisted(bandwidthProfile)
-                bandwidthProfile = profileId
-            }
-            this.txTotal = txTotal
-            this.rxTotal = rxTotal
+    override fun onTrafficUpdated(profileId: Long, stats: TrafficStats) {
+        if (profileId != 0L) {  // ignore aggregate stats
+            statsCache.put(profileId, stats)
             profilesAdapter.refreshId(profileId)
         }
     }
     fun onTrafficPersisted(profileId: Long) {
-        txTotal = 0
-        rxTotal = 0
-        if (bandwidthProfile != profileId) {
-            onTrafficPersisted(bandwidthProfile)
-            bandwidthProfile = profileId
-        }
+        statsCache.remove(profileId)
         profilesAdapter.deepRefreshId(profileId)
     }
 

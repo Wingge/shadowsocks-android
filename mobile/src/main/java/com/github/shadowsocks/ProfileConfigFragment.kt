@@ -23,12 +23,9 @@ package com.github.shadowsocks
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
-import android.os.UserManager
 import android.view.MenuItem
 import androidx.appcompat.app.AlertDialog
-import androidx.core.content.getSystemService
 import androidx.core.os.bundleOf
 import androidx.preference.Preference
 import androidx.preference.PreferenceDataStore
@@ -47,6 +44,7 @@ import com.github.shadowsocks.preference.PluginConfigurationDialogFragment
 import com.github.shadowsocks.utils.Action
 import com.github.shadowsocks.utils.DirectBoot
 import com.github.shadowsocks.utils.Key
+import com.google.android.material.snackbar.Snackbar
 import com.takisoft.preferencex.EditTextPreference
 import com.takisoft.preferencex.PreferenceFragmentCompat
 
@@ -62,17 +60,13 @@ class ProfileConfigFragment : PreferenceFragmentCompat(),
     private lateinit var pluginConfigure: EditTextPreference
     private lateinit var pluginConfiguration: PluginConfiguration
     private lateinit var receiver: BroadcastReceiver
+    private lateinit var udpFallback: Preference
 
     override fun onCreatePreferencesFix(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceManager.preferenceDataStore = DataStore.privateStore
         val activity = requireActivity()
         profileId = activity.intent.getLongExtra(Action.EXTRA_PROFILE_ID, -1L)
         addPreferencesFromResource(R.xml.pref_profile)
-        if (Build.VERSION.SDK_INT >= 25 && activity.getSystemService<UserManager>()?.isDemoUser == true) {
-            findPreference(Key.host).summary = "shadowsocks.example.org"
-            findPreference(Key.remotePort).summary = "1337"
-            findPreference(Key.password).summary = "\u2022".repeat(32)
-        }
         val serviceMode = DataStore.serviceMode
         findPreference(Key.remoteDns).isEnabled = serviceMode != Key.modeProxy
         isProxyApps = findPreference(Key.proxyApps) as SwitchPreference
@@ -92,13 +86,15 @@ class ProfileConfigFragment : PreferenceFragmentCompat(),
             DataStore.dirty = true
             pluginConfigure.isEnabled = newValue.isNotEmpty()
             pluginConfigure.text = pluginConfiguration.selectedOptions.toString()
-            if (PluginManager.fetchPlugins()[newValue]?.trusted == false)
-                (activity as MainActivity).snackbar().setText(R.string.plugin_untrusted).show()
+            if (PluginManager.fetchPlugins()[newValue]?.trusted == false) {
+                Snackbar.make(view!!, R.string.plugin_untrusted, Snackbar.LENGTH_LONG).show()
+            }
             true
         }
         pluginConfigure.onPreferenceChangeListener = this
         initPlugins()
         receiver = Core.listenForPackageChanges(false) { initPlugins() }
+        udpFallback = findPreference(Key.udpFallback)
         DataStore.privateStore.registerChangeListener(this)
     }
 
@@ -126,13 +122,16 @@ class ProfileConfigFragment : PreferenceFragmentCompat(),
         profile.deserialize()
         ProfileManager.updateProfile(profile)
         ProfilesFragment.instance?.profilesAdapter?.deepRefreshId(profileId)
-        if (DataStore.profileId == profileId && DataStore.directBootAware) DirectBoot.update()
+        if (profileId in Core.activeProfileIds && DataStore.directBootAware) DirectBoot.update()
         requireActivity().finish()
     }
 
     override fun onResume() {
         super.onResume()
         isProxyApps.isChecked = DataStore.proxyApps // fetch proxyApps updated by AppManager
+        val fallbackProfile = DataStore.udpFallback?.let { ProfileManager.getProfile(it) }
+        if (fallbackProfile == null) udpFallback.setSummary(R.string.plugin_disabled)
+        else udpFallback.summary = fallbackProfile.formattedName
     }
 
     override fun onPreferenceChange(preference: Preference?, newValue: Any?): Boolean = try {
@@ -142,8 +141,8 @@ class ProfileConfigFragment : PreferenceFragmentCompat(),
         DataStore.plugin = pluginConfiguration.toString()
         DataStore.dirty = true
         true
-    } catch (exc: IllegalArgumentException) {
-        (activity as MainActivity).snackbar(exc.localizedMessage).show()
+    } catch (exc: RuntimeException) {
+        Snackbar.make(view!!, exc.localizedMessage, Snackbar.LENGTH_LONG).show()
         false
     }
 
@@ -172,7 +171,7 @@ class ProfileConfigFragment : PreferenceFragmentCompat(),
         } else super.onActivityResult(requestCode, resultCode, data)
     }
 
-    override fun onOptionsItemSelected(item: MenuItem?) = when (item?.itemId) {
+    override fun onOptionsItemSelected(item: MenuItem) = when (item.itemId) {
         R.id.action_delete -> {
             val activity = requireActivity()
             AlertDialog.Builder(activity)

@@ -42,9 +42,8 @@ import com.github.shadowsocks.MainActivity
 import com.github.shadowsocks.R
 import com.github.shadowsocks.ToolbarFragment
 import com.github.shadowsocks.bg.BaseService
-import com.github.shadowsocks.utils.Subnet
+import com.github.shadowsocks.net.Subnet
 import com.github.shadowsocks.utils.asIterable
-import com.github.shadowsocks.utils.printLog
 import com.github.shadowsocks.utils.resolveResourceId
 import com.github.shadowsocks.widget.UndoSnackbarManager
 import com.google.android.material.textfield.TextInputLayout
@@ -52,6 +51,7 @@ import java.net.IDN
 import java.net.MalformedURLException
 import java.net.URL
 import java.util.*
+import java.util.regex.PatternSyntaxException
 
 class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, ActionMode.Callback {
     companion object {
@@ -62,7 +62,7 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
         private const val SELECTED_URLS = "com.github.shadowsocks.acl.CustomRulesFragment.SELECTED_URLS"
 
         // unescaped: (?<=^(\(\^\|\\\.\)|\^\(\.\*\\\.\)\?)).*(?=\$$)
-        private val PATTERN_DOMAIN = "(?<=^(\\(\\^\\|\\\\\\.\\)|\\^\\(\\.\\*\\\\\\.\\)\\?)).*(?=\\\$\$)".toRegex()
+        private val domainPattern = "(?<=^(\\(\\^\\|\\\\\\.\\)|\\^\\(\\.\\*\\\\\\.\\)\\?)).*(?=\\\$\$)".toRegex()
     }
 
     private enum class Template {
@@ -86,7 +86,7 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
             inputLayout = view.findViewById(R.id.content_layout)
             when (item) {
                 is String -> {
-                    val match = PATTERN_DOMAIN.find(item)
+                    val match = domainPattern.find(item)
                     if (match != null) {
                         templateSelector.setSelection(Template.Domain.ordinal)
                         editText.setText(IDN.toUnicode(match.value.replace("\\.", "."),
@@ -129,7 +129,15 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
         private fun validate(template: Int = templateSelector.selectedItemPosition, value: Editable = editText.text) {
             var message = ""
             positive.isEnabled = when (Template.values()[template]) {
-                Template.Generic -> value.isNotEmpty()
+                Template.Generic -> value.toString().run {
+                    try {
+                        if (Subnet.fromString(this) == null) toPattern()
+                        true
+                    } catch (e: PatternSyntaxException) {
+                        message = e.localizedMessage
+                        false
+                    }
+                }
                 Template.Domain -> try {
                     IDN.toASCII(value.toString(), IDN.ALLOW_UNASSIGNED or IDN.USE_STD3_ASCII_RULES)
                     true
@@ -166,6 +174,7 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
         private val text = view.findViewById<TextView>(android.R.id.text1)
 
         init {
+            view.isFocusable = true
             view.setOnClickListener(this)
             view.setOnLongClickListener(this)
             view.setBackgroundResource(R.drawable.background_selectable)
@@ -338,7 +347,7 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
     }
 
     private val isEnabled get() = when ((activity as MainActivity).state) {
-        BaseService.CONNECTED -> Core.currentProfile?.route != Acl.CUSTOM_RULES
+        BaseService.CONNECTED -> Core.currentProfile?.first?.route != Acl.CUSTOM_RULES
         BaseService.STOPPED -> true
         else -> false
     }
@@ -428,7 +437,7 @@ class CustomRulesFragment : ToolbarFragment(), Toolbar.OnMenuItemClickListener, 
                 check(adapter.addToProxy(clipboard.primaryClip!!.getItemAt(0).text.toString()) != null)
             } catch (exc: Exception) {
                 (activity as MainActivity).snackbar().setText(R.string.action_import_err).show()
-                printLog(exc)
+                exc.printStackTrace()
             }
             true
         }

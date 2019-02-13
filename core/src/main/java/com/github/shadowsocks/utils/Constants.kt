@@ -59,6 +59,7 @@ object Key {
 
     const val plugin = "plugin"
     const val pluginConfigure = "plugin.configure"
+    const val udpFallback = "udpFallback"
 
     const val dirty = "profileDirty"
 
@@ -69,6 +70,7 @@ object Key {
     const val controlStats = "control.stats"
     const val controlImport = "control.import"
     const val controlExport = "control.export"
+    const val about = "about"
 }
 
 object Action {

@@ -26,10 +26,14 @@ import android.util.AttributeSet
 import android.view.View
 import android.widget.TextView
 import androidx.coordinatorlayout.widget.CoordinatorLayout
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Observer
+import androidx.lifecycle.ViewModelProviders
+import androidx.lifecycle.get
 import com.github.shadowsocks.MainActivity
 import com.github.shadowsocks.R
 import com.github.shadowsocks.bg.BaseService
-import com.github.shadowsocks.utils.HttpsTest
+import com.github.shadowsocks.net.HttpsTest
 import com.google.android.material.bottomappbar.BottomAppBar
 
 class StatsBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null,
@@ -40,9 +44,8 @@ class StatsBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     private lateinit var rxText: TextView
     private lateinit var txRateText: TextView
     private lateinit var rxRateText: TextView
-    private val tester by lazy { HttpsTest(statusText::setText) { (context as MainActivity).snackbar(it).show() } }
-
-    override fun getBehavior() = object : Behavior() {
+    private val tester = ViewModelProviders.of(context as FragmentActivity).get<HttpsTest>()
+    private val behavior = object : Behavior() {
         val threshold = context.resources.getDimensionPixelSize(R.dimen.stats_bar_scroll_threshold)
         override fun onNestedScroll(coordinatorLayout: CoordinatorLayout, child: BottomAppBar, target: View,
                                     dxConsumed: Int, dyConsumed: Int, dxUnconsumed: Int, dyUnconsumed: Int, type: Int) {
@@ -51,6 +54,7 @@ class StatsBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
                     dxUnconsumed, 0, type)
         }
     }
+    override fun getBehavior() = behavior
 
     override fun setOnClickListener(l: OnClickListener?) {
         statusText = findViewById(R.id.status)
@@ -62,15 +66,21 @@ class StatsBar @JvmOverloads constructor(context: Context, attrs: AttributeSet? 
     }
 
     fun changeState(state: Int) {
-        statusText.setText(when (state) {
-            BaseService.CONNECTING -> R.string.connecting
-            BaseService.CONNECTED -> R.string.vpn_connected
-            BaseService.STOPPING -> R.string.stopping
-            else -> R.string.not_connected
-        })
+        val activity = context as MainActivity
         if (state != BaseService.CONNECTED) {
             updateTraffic(0, 0, 0, 0)
-            tester.invalidate()
+            tester.status.removeObservers(activity)
+            if (state != BaseService.IDLE) tester.invalidate()
+            statusText.setText(when (state) {
+                BaseService.CONNECTING -> R.string.connecting
+                BaseService.STOPPING -> R.string.stopping
+                else -> R.string.not_connected
+            })
+        } else {
+            behavior.slideUp(this)
+            tester.status.observe(activity, Observer {
+                it.retrieve(statusText::setText) { activity.snackbar(it).show() }
+            })
         }
     }
 
